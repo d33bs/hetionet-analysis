@@ -145,7 +145,11 @@ table_metapaths = pa.Table.from_pandas(df_metapaths)
 
 print(
     "Expected number of queries: ",
-    table_bioprocesses.num_rows * table_genes.num_rows * table_metapaths.num_rows,
+    (
+        expected_queries := table_bioprocesses.num_rows
+        * table_genes.num_rows
+        * table_metapaths.num_rows
+    ),
 )
 # -
 
@@ -156,6 +160,11 @@ sample_result = hetiocli.get_metapath_data(
     metapath=str(table_metapaths[0][0]),
 )
 sample_result
+
+print(
+    "Expected storage: ",
+    (sample_result.memory_usage().sum() * expected_queries) / 1024 / 1024 / 1024,
+)
 
 # +
 # create results folder
