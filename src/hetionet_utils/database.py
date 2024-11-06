@@ -2,10 +2,11 @@
 Modules for interacting with various databases.
 """
 
-from neo4j import GraphDatabase
-from typing import List
+from typing import List, Optional, Self
+
 import pandas as pd
 import requests
+from neo4j import GraphDatabase
 
 
 class HetionetNeo4j:
@@ -19,7 +20,12 @@ class HetionetNeo4j:
             The Cypher query to get Neo4j ID from a node identifier.
     """
 
-    def __init__(self, uri="bolt://neo4j.het.io:7687", user="neo4j", password="neo4j"):
+    def __init__(
+        self: Self,
+        uri: str = "bolt://neo4j.het.io:7687",
+        user: str = "neo4j",
+        password: str = "neo4j",
+    ) -> None:
         """
         Initialize the HetionetNeo4j class with a connection
         to the Neo4j database.
@@ -44,13 +50,15 @@ class HetionetNeo4j:
             """
         self.api_base_path = "https://search-api.het.io/v1"
 
-    def close(self):
+    def close(self: Self) -> None:
         """
         Close the connection to the Neo4j database.
         """
         self.driver.close()
 
-    def run_query(self, query: str, parameters: dict = None) -> List[dict]:
+    def run_query(
+        self: Self, query: str, parameters: Optional[dict] = None
+    ) -> List[dict]:
         """
         Run a Cypher query against the Neo4j database.
 
@@ -70,7 +78,7 @@ class HetionetNeo4j:
             result = session.run(query, parameters)
             return list(result)
 
-    def get_id_from_identifer(self, identifier: str) -> int:
+    def get_id_from_identifer(self: Self, identifier: str) -> int:
         """
         Get the Neo4j ID of a node from its identifier.
 
@@ -87,8 +95,10 @@ class HetionetNeo4j:
             query=self.query_node_identifier_to_neo4j_id,
             parameters={"identifier": identifier},
         )[0]["neo4j_id"]
-    
-    def get_metapath_data(self, source_id: str, target_id: str, metapath: str) -> pd.DataFrame:
+
+    def get_metapath_data(
+        self: Self, source_id: str, target_id: str, metapath: str
+    ) -> pd.DataFrame:
         """
         Gathers metapath data from Hetionet via REST API.
         """

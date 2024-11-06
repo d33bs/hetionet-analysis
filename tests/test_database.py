@@ -45,10 +45,9 @@ def test_run_query(fixture_HetionetNeo4j: HetionetNeo4j):
     Tests HetionetNeo4j.run_query
     """
 
-    assert (
-        dict(
-            fixture_HetionetNeo4j.run_query(
-                query="""
+    assert dict(
+        fixture_HetionetNeo4j.run_query(
+            query="""
             MATCH (node)
             WHERE
               node.identifier = 1
@@ -58,11 +57,9 @@ def test_run_query(fixture_HetionetNeo4j: HetionetNeo4j):
               node.url as node_url
             ORDER BY neo4j_id
             """
-            )[0]
-        )
-        == {
-            "neo4j_id": 16764,
-            "identifier": 1,
-            "node_url": "http://identifiers.org/ncbigene/1",
-        }
-    )
+        )[0]
+    ) == {
+        "neo4j_id": 16764,
+        "identifier": 1,
+        "node_url": "http://identifiers.org/ncbigene/1",
+    }

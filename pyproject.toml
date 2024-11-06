@@ -15,15 +15,15 @@ classifiers = [
 ]
 dynamic = [ "version" ]
 dependencies = [
-  "black>=24.10.0",
-  "hetmatpy>=0.1.0",
+  "black>=24.10",
+  "hetmatpy>=0.1",
   "ipywidgets>=8.1.5",
   "isort>=5.13.2",
+  "jupyterlab>=4.3",
   "jupyterlab-code-formatter>=3.0.2",
-  "jupyterlab>=4.3.0",
   "jupytext>=1.16.4",
-  "lancedb>=0.15.0",
-  "neo4j>=5.26.0",
+  "lancedb>=0.15",
+  "neo4j>=5.26",
   "requests>=2.32.3",
 ]
 
@@ -57,9 +57,14 @@ lint.select = [
   "SIM",
   "W",
 ]
-
 # Ignore `E402` and `F401` (unused imports) in all `__init__.py` files
 lint.per-file-ignores."__init__.py" = [ "F401" ]
+
+# ignore typing rules for tests
+lint.per-file-ignores."tests/*" = [ "ANN201", "PLR0913", "PLR2004" ]
+
+[tool.jupytext]
+formats = "ipynb,py:light"
 
 [tool.uv]
 dev-dependencies = [

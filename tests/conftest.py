@@ -5,7 +5,9 @@ https://docs.pytest.org/en/stable/explanation/fixtures.html
 """
 
 import pytest
+
 from hetionet_utils.database import HetionetNeo4j
+
 
 @pytest.fixture
 def fixture_HetionetNeo4j() -> HetionetNeo4j:
@@ -19,7 +21,3 @@ def fixture_HetionetNeo4j() -> HetionetNeo4j:
 
     # close the connection
     hetionet.close()
-
-
-
-
