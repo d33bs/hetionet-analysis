@@ -155,6 +155,7 @@ sample_result = hetiocli.get_metapath_data(
     target_id=int(str(table_genes[0][0])),
     metapath=str(table_metapaths[0][0]),
 )
+sample_result
 
 # +
 # create results folder
