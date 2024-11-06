@@ -23,8 +23,7 @@ class HetionetNeo4j:
     def __init__(
         self: Self,
         uri: str = "bolt://neo4j.het.io:7687",
-        user: str = "neo4j",
-        password: str = "neo4j",
+
     ) -> None:
         """
         Initialize the HetionetNeo4j class with a connection
@@ -33,12 +32,8 @@ class HetionetNeo4j:
         Args:
             uri (str):
                 The URI of the Neo4j database.
-            user (str):
-                The username for the Neo4j database.
-            password (str):
-                The password for the Neo4j database.
         """
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+        self.driver = GraphDatabase.driver(uri, auth=None)
         self.query_node_identifier_to_neo4j_id = """
             MATCH (node)
             WHERE
