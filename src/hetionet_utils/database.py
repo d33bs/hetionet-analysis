@@ -23,7 +23,6 @@ class HetionetNeo4j:
     def __init__(
         self: Self,
         uri: str = "bolt://neo4j.het.io:7687",
-
     ) -> None:
         """
         Initialize the HetionetNeo4j class with a connection

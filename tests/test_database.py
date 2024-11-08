@@ -1,5 +1,5 @@
 """
-Tests for the neo4j module.
+Tests for database.py
 """
 
 from hetionet_utils.database import HetionetNeo4j

@@ -12,7 +12,9 @@
 #     name: python3
 # ---
 
-# # Biological Process and Gene Metapath Data Gathering
+# # Biological Process and Gene Metapath Data Gathering - Subset - Metapath BPpGdAdG
+#
+# This notebook focuses on gathering **a subset** of data related to the following requirements and **focusing on metapath BPpGdAdG**:
 #
 # - Each value from `BP.csv` is a source and each value
 # from `Gene.csv` is a target.
@@ -37,24 +39,6 @@ from hetionet_utils.database import HetionetNeo4j
 
 
 # +
-def load_arrow_table_from_csv_column(file_path: str, column_name: str) -> pa.Table:
-    """
-    Loads a single-column Arrow Table from a CSV file.
-
-    Args:
-        file_path (str):
-            The path to the CSV file.
-        column_name (str):
-            The name of the column to extract.
-
-    Returns:
-        pa.Table:
-            Arrow Table with the specified column.
-    """
-    table = csv.read_csv(file_path)
-    return table.select([column_name])
-
-
 def generate_combinations(
     table_bioprocesses: pa.Table, table_genes: pa.Table, table_metapaths: pa.Table
 ) -> Generator[Tuple[str, str, str], None, None]:
@@ -139,8 +123,8 @@ df_metapaths.head()
 
 # +
 # Load input CSV files into Arrow Tables
-table_bioprocesses = load_arrow_table_from_csv_column("data/sources/BP.csv", "id")
-table_genes = load_arrow_table_from_csv_column("data/sources/Gene.csv", "id")
+table_bioprocesses = csv.read_csv("data/sources/BP.csv").select(["id"])
+table_genes = csv.read_csv("data/sources/Gene.csv").select(["id"])
 table_metapaths = pa.Table.from_pandas(df_metapaths)
 
 print(
@@ -161,9 +145,25 @@ sample_result = hetiocli.get_metapath_data(
 )
 sample_result
 
+# export to file and measure the size
+sample_result.to_parquet((filepath := "example_output.parquet"))
 print(
     "Expected storage: ",
-    (sample_result.memory_usage().sum() * expected_queries) / 1024 / 1024 / 1024,
+    (
+        # bytes
+        pathlib.Path(filepath).stat().st_size
+        *
+        # multiplied by the number of expected queries we need to make
+        expected_queries
+    )
+    /
+    # kilobytes
+    1024 /
+    # megabytes
+    1024 /
+    # gigabytes
+    1024,
+    "GB",
 )
 
 # +
