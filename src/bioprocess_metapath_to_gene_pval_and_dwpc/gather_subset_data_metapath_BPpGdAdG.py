@@ -29,6 +29,8 @@
 # +
 import pathlib
 from functools import partial
+from itertools import product
+from typing import Generator, Iterator, Tuple
 
 import lancedb
 import pandas as pd
@@ -41,7 +43,6 @@ from hetionet_utils.combination import (
     process_in_chunks_for_bioprocs_genes_and_metapaths,
 )
 from hetionet_utils.database import HetionetNeo4j
-
 # -
 
 # gather metapaths which are not in the metapaths_ignore.csv

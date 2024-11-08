@@ -79,9 +79,13 @@ dev-dependencies = [
 # install the project for development purposes
 setup.shell = """
 uv pip install '.[dev]'
-# run testing on development source
 """
+# run testing on development source
 test.shell = """
 uv run pre-commit run -a
 uv run pytest
+"""
+#
+run_bioproc_gene_metapath_test.shell = """
+uv run python src/bioprocess_metapath_to_gene_pval_and_dwpc/gather_subset_data_metapath_BPpGdAdG.py
 """
