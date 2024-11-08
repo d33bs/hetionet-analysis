@@ -27,15 +27,13 @@
 
 # +
 import pathlib
-from itertools import product
-from typing import Generator, Iterator, Tuple
 
-import lancedb
 import pandas as pd
 import pyarrow as pa
 from pyarrow import csv
 
 from hetionet_utils.database import HetionetNeo4j
+
 # -
 
 # gather metapaths which are not in the metapaths_ignore.csv
@@ -62,6 +60,7 @@ print(
 )
 # -
 
+# build a sample result from HetionetNeo4j
 hetiocli = HetionetNeo4j()
 sample_result = hetiocli.get_metapath_data(
     source_id=str(table_bioprocesses[0][0]),
@@ -83,47 +82,12 @@ print(
     )
     /
     # kilobytes
-    1024 /
+    1024
+    /
     # megabytes
-    1024 /
+    1024
+    /
     # gigabytes
     1024,
     "GB",
 )
-
-# +
-# create results folder
-pathlib.Path("data/results").mkdir(exist_ok=True)
-
-# Initialize your LanceDB database and table
-db = lancedb.connect("data/results/bioprocess_and_gene_metapaths")
-table_name = "bioprocess_gene_metapath_scores"
-
-# create table, overwriting previous results
-db.create_table(
-    table_name,
-    schema=pa.Table.from_pandas(sample_result).schema,
-    mode="overwrite",
-)
-
-table = db.open_table(table_name)
-
-# +
-# Generate combinations
-generator = generate_combinations(table_bioprocesses, table_genes, table_metapaths)
-
-count = 1
-# Process and print chunks
-for chunk_table in process_in_chunks(generator, chunk_size=5000000):
-    # add the chunk to the table
-    print(f"Adding chunk {count}")
-    table.add(chunk_table)
-    count += 1
-    break
-
-# +
-# After inserting all chunks, show the shape of the table
-num_rows = table.count()
-num_columns = len(table.schema().names)
-
-print(f"Table shape: ({num_rows}, {num_columns})")

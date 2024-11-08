@@ -91,10 +91,33 @@ class HetionetNeo4j:
         )[0]["neo4j_id"]
 
     def get_metapath_data(
-        self: Self, source_id: str, target_id: str, metapath: str
+        self: Self,
+        source_id: str,
+        target_id: str,
+        metapath: str,
+        columns: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """
-        Gathers metapath data from Hetionet via REST API.
+        Retrieves metapath data between a source and target node from the
+        Hetionet database via a REST API.
+
+        Args:
+            source_id (str):
+                The identifier for the source node.
+            target_id (str):
+                The identifier for the target node.
+            metapath (str):
+                The metapath pattern to query, representing a specific path
+                through the network.
+            columns (Optional[List[str]], optional):
+                A list of specific columns to include in the result DataFrame.
+                If None, all columns are included. Defaults to None.
+
+        Returns:
+            pd.DataFrame:
+                A DataFrame containing paths between the source and
+                target based on the specified metapath. The DataFrame includes a
+                'source_id' and 'target_id' column with the identifiers for context.
         """
 
         url = (
@@ -103,4 +126,10 @@ class HetionetNeo4j:
         )
 
         # gather response paths as dataframe
-        return pd.DataFrame(requests.get(url).json()["paths"])
+        df_result = pd.DataFrame(requests.get(url).json()["paths"])
+
+        # add the source and target ids
+        df_result["source_id"] = source_id
+        df_result["target_id"] = target_id
+
+        return df_result if columns is None else df_result[columns]

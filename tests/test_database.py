@@ -29,6 +29,8 @@ def test_get_metapath_data(fixture_HetionetNeo4j: HetionetNeo4j):
     assert fixture_HetionetNeo4j.get_metapath_data(
         source_id="UBERON:0001135", target_id="DOID:13223", metapath="AeGiGaD"
     ).iloc[1].to_dict() == {
+        "source_id": "UBERON:0001135",
+        "target_id": "DOID:13223",
         "metapath": "AeGiGaD",
         "node_ids": [18472, 34788, 13320, 17256],
         "rel_ids": [1722767, 1555684, 94499],
