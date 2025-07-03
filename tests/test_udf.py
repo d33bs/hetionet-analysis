@@ -3,8 +3,9 @@ Tests for udf.py
 """
 import pytest
 
+import duckdb
 import hetionet_utils.udf as hetio_udf
-from hetionet_utils.udf import _fetch_paths, get_pdp, get_pct
+from hetionet_utils.udf import _fetch_paths, get_pdp, get_pct, register_hetio_udfs
 
 # Use real Het.io API endpoint parameters
 LIVE_SOURCE = 42494
@@ -73,3 +74,11 @@ def test_missing_pathcount_id():
     assert pdp is None
     assert pct is None
 
+def test_register_hetio_udfs():
+    """
+    Tests register_hetio_udfs
+    """
+
+    conn = register_hetio_udfs(duckdb.connect(database=':memory:'))
+    assert isinstance(conn, duckdb.DuckDBPyConnection)
+    conn.close()

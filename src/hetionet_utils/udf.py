@@ -4,6 +4,7 @@ Creates UDFs for various Het.io API calls.
 
 import requests
 from threading import Lock
+from duckdb import DuckDBPyConnection
 from typing import Dict, Tuple, Optional
 
 # Module-level cache shared across all UDF calls
@@ -134,3 +135,28 @@ def get_pct(
 
     pct_val = _API_CACHE[key].get(pathcount_id, (None, None))[1]
     return pct_val
+
+def register_hetio_udfs(conn: DuckDBPyConnection) -> None:
+    """
+    Register Het.io UDFs with a DuckDB connection.
+
+    Parameters
+    ----------
+    conn : DuckDBPyConnection
+        An active DuckDB connection.
+    """
+    # DuckDB expects Python-callable UDFs to be registered via create_function
+    conn.create_function(
+        'get_pdp',
+        get_pdp,
+        parameters=['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER'],
+        return_type='DOUBLE'
+    )
+    conn.create_function(
+        'get_pct',
+        get_pct,
+        parameters=['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER'],
+        return_type='DOUBLE'
+    )
+
+    return conn
