@@ -31,6 +31,7 @@ import pathlib
 
 import duckdb
 import requests
+from duckdb import DuckDBPyConnection
 
 from hetionet_utils.sql import (
     extract_and_write_sql_block,
@@ -172,56 +173,61 @@ with duckdb.connect(duckdb_filename) as ddb:
                     """
                 )
 
+# +
 # read and export data to parquet for simpler use
-target_file = "./data/connectivity-search-precalculated-metapath-data.parquet"
-with duckdb.connect(duckdb_filename) as ddb:
-    # copy data directly to Parquet from DuckDB
-    ddb.execute(
-        f"""
-        COPY (
-            SELECT
-                pathcount.id,
-                source.identifier AS source_identifier,
-                target.identifier AS target_identifier,
-                pathcount.metapath_id,
-                pathcount.path_count,
-                /* we build an adjusted p_value based on the implementation
-                found here:
-                https://github.com/greenelab/connectivity-search-backend/blob/main/dj_hetmech_app/models.py#L94
-                */
-                CASE
-                    WHEN pathcount.p_value * metapath.n_similar > 1.0 THEN 1.0
-                    ELSE pathcount.p_value * metapath.n_similar
-                END AS adjusted_p_value,
-                pathcount.p_value,
-                pathcount.dwpc,
-                degree.source_degree,
-                degree.target_degree,
-                degree.n_dwpcs,
-                degree.n_nonzero_dwpcs,
-                degree.nonzero_mean,
-                degree.nonzero_sd,
-                pathcount.source_id,
-                pathcount.target_id,
-                pathcount.dgp_id
-            FROM
-                dj_hetmech_app_pathcount as pathcount
-            LEFT JOIN dj_hetmech_app_node AS source ON
-                pathcount.source_id = source.id
-            LEFT JOIN dj_hetmech_app_node AS target ON
-                pathcount.target_id = target.id
-            LEFT JOIN dj_hetmech_app_degreegroupedpermutation as degree ON
-                pathcount.dgp_id = degree.id
-                AND pathcount.metapath_id = degree.metapath_id
-            LEFT JOIN dj_hetmech_app_metapath as metapath ON
-                pathcount.metapath_id = metapath.abbreviation
+metapath_file = "./data/connectivity-search-precalculated-metapath-data.parquet"
+
+# if we don't already have a file, create it
+if not pathlib.Path(metapath_file).is_file():
+    with duckdb.connect(duckdb_filename) as ddb:
+        # copy data directly to Parquet from DuckDB
+        ddb.execute(
+            f"""
+            COPY (
+                SELECT
+                    pathcount.id,
+                    source.identifier AS source_identifier,
+                    target.identifier AS target_identifier,
+                    pathcount.metapath_id,
+                    pathcount.path_count,
+                    /* we build an adjusted p_value based on the implementation
+                    found here:
+                    https://github.com/greenelab/connectivity-search-backend/blob/main/dj_hetmech_app/models.py#L94
+                    */
+                    CASE
+                        WHEN pathcount.p_value * metapath.n_similar > 1.0 THEN 1.0
+                        ELSE pathcount.p_value * metapath.n_similar
+                    END AS adjusted_p_value,
+                    pathcount.p_value,
+                    pathcount.dwpc,
+                    degree.source_degree,
+                    degree.target_degree,
+                    degree.n_dwpcs,
+                    degree.n_nonzero_dwpcs,
+                    degree.nonzero_mean,
+                    degree.nonzero_sd,
+                    pathcount.source_id,
+                    pathcount.target_id,
+                    pathcount.dgp_id
+                FROM
+                    dj_hetmech_app_pathcount as pathcount
+                LEFT JOIN dj_hetmech_app_node AS source ON
+                    pathcount.source_id = source.id
+                LEFT JOIN dj_hetmech_app_node AS target ON
+                    pathcount.target_id = target.id
+                LEFT JOIN dj_hetmech_app_degreegroupedpermutation as degree ON
+                    pathcount.dgp_id = degree.id
+                    AND pathcount.metapath_id = degree.metapath_id
+                LEFT JOIN dj_hetmech_app_metapath as metapath ON
+                    pathcount.metapath_id = metapath.abbreviation
+            )
+            TO '{metapath_file}'
+            (FORMAT parquet, COMPRESSION zstd);
+            """
         )
-        TO '{target_file}'
-        (FORMAT parquet, COMPRESSION zstd);
-        """
-    )
 # confirm that we have the file
-pathlib.Path("./data/connectivity-search-precalculated-metapath-data.parquet").is_file()
+pathlib.Path(metapath_file).is_file()
+# -
 
 # show an row count using the parquet file output
 with duckdb.connect() as ddb:
@@ -256,3 +262,115 @@ with duckdb.connect() as ddb:
         """
     ).df()
 sample
+
+# double check our count is distinct
+with duckdb.connect() as ddb:
+    sample = ddb.execute(
+        f"""
+        WITH example AS (
+            SELECT 
+                DISTINCT
+                source_id,
+                target_id,
+                id
+            FROM read_parquet('{target_file}')
+        )
+        SELECT count(*) FROM example;
+        """
+    ).df()
+sample
+
+# +
+import json
+
+import requests
+
+
+def get_paths_json(source: int, target: int, metapath: str) -> str:
+    """
+    Fetch the full Het.io “paths” JSON blob for the given triple
+    and return it as a raw JSON string.
+    """
+    url = (
+        f"https://search-api.het.io/v1/paths/"
+        f"source/{source}/target/{target}/metapath/{metapath}/"
+        "?format=json"
+    )
+    resp = requests.get(url)
+    resp.raise_for_status()
+    raw_paths = resp.json()["paths"]
+
+    EXPECTED_KEYS = [
+        "metapath",
+        "node_ids",
+        "rel_ids",
+        "percent_of_DWPC",
+        "PC",
+        "DWPC",
+        "score",
+    ]
+
+    return json.dumps([{k: p.get(k) for k in EXPECTED_KEYS} for p in raw_paths])
+
+
+# -
+
+get_paths_json(42494, 39906, "BPpGdCrC")
+
+# %%time
+# create a paths table
+path_file = "./data/connectivity-search-precalculated-path-data.parquet"
+if not pathlib.Path(target_file).is_file():
+    with duckdb.connect() as ddb:
+        ddb.create_function(
+            "get_paths_json",
+            get_paths_json,
+            parameters=["INTEGER", "INTEGER", "VARCHAR"],
+            return_type="VARCHAR",
+            null_handling="special",
+        )
+        sample = ddb.execute(
+            f"""
+            COPY (
+                WITH metapaths AS (
+                    SELECT 
+                        source_id,
+                        target_id,
+                        metapath_id
+                    FROM read_parquet('{metapath_file}')
+                    LIMIT 2
+                ),
+                paths_json AS (
+                    SELECT
+                        source_id,
+                        target_id,
+                        metapath_id,
+                        CAST(
+                            get_paths_json(
+                                source_id,
+                                target_id,
+                                metapath_id
+                            ) 
+                        AS JSON
+                        ) AS paths
+                      FROM metapaths
+                    )
+                    SELECT 
+                        source_id,
+                        target_id,
+                        metapath_id,
+                        /* we unnest the json data from each record
+                        so as to show it in a more flattened representation */
+                        unnest(json_extract(paths, '$[*].node_ids')) as node_ids,
+                        unnest(json_extract(paths, '$[*].rel_ids')) as rel_ids,
+                        unnest(json_extract(paths, '$[*].percent_of_DWPC')) as percent_of_DWPC,
+                        unnest(json_extract(paths, '$[*].PC')) as PC,
+                        unnest(json_extract(paths, '$[*].DWPC')) as DWPC,
+                        unnest(json_extract(paths, '$[*].score')) as score
+                    FROM paths_json
+                )
+                TO '{path_file}'
+                (FORMAT parquet, COMPRESSION zstd);
+            """
+        )
+pathlib.Path(path_file).is_file()
