@@ -29,6 +29,7 @@ def get_paths_json(source: int, target: int, metapath: str) -> str:
         "PC",
         "DWPC",
         "score",
+        "PDP"
     ]
 
     return json.dumps([{k: p.get(k) for k in EXPECTED_KEYS} for p in raw_paths])

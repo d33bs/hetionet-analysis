@@ -33,6 +33,7 @@ import duckdb
 import requests
 from duckdb import DuckDBPyConnection
 
+from hetionet_utils.udf import get_paths_json
 from hetionet_utils.sql import (
     extract_and_write_sql_block,
     remove_first_and_last_line_of_file,
@@ -280,43 +281,6 @@ with duckdb.connect() as ddb:
     ).df()
 sample
 
-# +
-import json
-
-import requests
-
-
-def get_paths_json(source: int, target: int, metapath: str) -> str:
-    """
-    Fetch the full Het.io “paths” JSON blob for the given triple
-    and return it as a raw JSON string.
-    """
-    url = (
-        f"https://search-api.het.io/v1/paths/"
-        f"source/{source}/target/{target}/metapath/{metapath}/"
-        "?format=json"
-    )
-    resp = requests.get(url)
-    resp.raise_for_status()
-    raw_paths = resp.json()["paths"]
-
-    EXPECTED_KEYS = [
-        "metapath",
-        "node_ids",
-        "rel_ids",
-        "percent_of_DWPC",
-        "PC",
-        "DWPC",
-        "score",
-    ]
-
-    return json.dumps([{k: p.get(k) for k in EXPECTED_KEYS} for p in raw_paths])
-
-
-# -
-
-get_paths_json(42494, 39906, "BPpGdCrC")
-
 # %%time
 # create a paths table
 path_file = "./data/connectivity-search-precalculated-path-data.parquet"
@@ -363,9 +327,10 @@ if not pathlib.Path(target_file).is_file():
                         so as to show it in a more flattened representation */
                         unnest(json_extract(paths, '$[*].node_ids')) as node_ids,
                         unnest(json_extract(paths, '$[*].rel_ids')) as rel_ids,
-                        unnest(json_extract(paths, '$[*].percent_of_DWPC')) as percent_of_DWPC,
+                        unnest(json_extract(paths, '$[*].PDP')) as PDP,
                         unnest(json_extract(paths, '$[*].PC')) as PC,
                         unnest(json_extract(paths, '$[*].DWPC')) as DWPC,
+                        unnest(json_extract(paths, '$[*].percent_of_DWPC')) as percent_of_DWPC,
                         unnest(json_extract(paths, '$[*].score')) as score
                     FROM paths_json
                 )
@@ -374,3 +339,5 @@ if not pathlib.Path(target_file).is_file():
             """
         )
 pathlib.Path(path_file).is_file()
+
+
