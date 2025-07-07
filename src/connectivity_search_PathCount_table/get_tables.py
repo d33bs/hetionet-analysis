@@ -293,22 +293,25 @@ if not pathlib.Path(target_file).is_file():
             return_type="VARCHAR",
             null_handling="special",
         )
-        sample = ddb.execute(
+        ddb.execute(
             f"""
             COPY (
                 WITH metapaths AS (
                     SELECT 
+                        /* gather only combinations
+                        we require for path APIpath_file queries */
                         source_id,
                         target_id,
                         metapath_id
                     FROM read_parquet('{metapath_file}')
-                    LIMIT 2
                 ),
                 paths_json AS (
                     SELECT
                         source_id,
                         target_id,
                         metapath_id,
+                        /* we cast data from an API
+                        as JSON records */
                         CAST(
                             get_paths_json(
                                 source_id,
@@ -333,9 +336,9 @@ if not pathlib.Path(target_file).is_file():
                         unnest(json_extract(paths, '$[*].percent_of_DWPC')) as percent_of_DWPC,
                         unnest(json_extract(paths, '$[*].score')) as score
                     FROM paths_json
-                )
-                TO '{path_file}'
-                (FORMAT parquet, COMPRESSION zstd);
+            )
+            TO '{path_file}'
+            (FORMAT parquet, COMPRESSION zstd);
             """
         )
 pathlib.Path(path_file).is_file()
