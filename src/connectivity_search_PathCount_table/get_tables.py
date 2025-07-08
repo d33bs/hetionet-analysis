@@ -28,16 +28,24 @@
 import gzip
 import os
 import pathlib
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from typing import Any, Callable, Iterator, List, Tuple
 
 import duckdb
 import requests
 from duckdb import DuckDBPyConnection
 
-from hetionet_utils.udf import get_paths_json
 from hetionet_utils.sql import (
     extract_and_write_sql_block,
     remove_first_and_last_line_of_file,
 )
+from hetionet_utils.udf import get_paths_json
+
+# get number of physical/logical CPUs
+n_cpus = os.cpu_count() or 1
+
+# heuristic factor: 4× cores for I/O bound work
+DEFAULT_THREADS = min(256, n_cpus * 4)
 
 # create the data dir
 pathlib.Path("data").mkdir(exist_ok=True)
@@ -60,6 +68,8 @@ target_identifier_table_name = "public.dj_hetmech_app_node"
 
 # duckdb filename
 duckdb_filename = "data/connectivity-search.duckdb"
+
+metapath_file = "./data/connectivity-search-precalculated-metapath-data.parquet"
 
 # +
 # gather postgresql database archive
@@ -176,7 +186,6 @@ with duckdb.connect(duckdb_filename) as ddb:
 
 # +
 # read and export data to parquet for simpler use
-metapath_file = "./data/connectivity-search-precalculated-metapath-data.parquet"
 
 # if we don't already have a file, create it
 if not pathlib.Path(metapath_file).is_file():
@@ -281,10 +290,15 @@ with duckdb.connect() as ddb:
     ).df()
 sample
 
+# +
 # %%time
 # create a paths table
-path_file = "./data/connectivity-search-precalculated-path-data.parquet"
-if not pathlib.Path(target_file).is_file():
+# file holding all the per‐combination Parquet outputs
+output_dir = "./data/connectivity_paths_by_metapath/"
+
+if not pathlib.Path(output_dir).is_dir():
+    pathlib.Path(output_dir).mkdir(parents=True)
+
     with duckdb.connect() as ddb:
         ddb.create_function(
             "get_paths_json",
@@ -337,10 +351,129 @@ if not pathlib.Path(target_file).is_file():
                         unnest(json_extract(paths, '$[*].score')) as score
                     FROM paths_json
             )
-            TO '{path_file}'
-            (FORMAT parquet, COMPRESSION zstd);
+            TO '{output_dir}'
+            (FORMAT parquet, 
+                COMPRESSION zstd, 
+                PARTITION_BY (source_id, target_id, metapath_id
+                )
+            );
             """
         )
-pathlib.Path(path_file).is_file()
+# show the number of parquet files we generated
+len(list(pathlib.Path(output_dir).rglob("**/*.parquet")))
+# +
+def metapath_generator(metapath_file: str) -> Iterator[Tuple[int, int, str]]:
+    """Stream (source_id, target_id, metapath_id) one row at a time."""
+    conn = duckdb.connect()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT source_id, target_id, metapath_id "
+        f"FROM read_parquet('{metapath_file}')"
+    )
+    while True:
+        row = cur.fetchone()
+        if row is None:
+            break
+        yield row
+    conn.close()
+
+
+def _export_one(
+    source_id: int,
+    target_id: int,
+    metapath_id: str,
+    output_dir: str,
+    get_paths_json: Callable[[int, int, str], Any],
+) -> None:
+    """Export one triplet to its own Parquet file."""
+    conn = duckdb.connect()
+    conn.create_function(
+        "get_paths_json",
+        get_paths_json,
+        parameters=["INTEGER", "INTEGER", "VARCHAR"],
+        return_type="VARCHAR",
+        null_handling="special",
+    )
+    out_file = (
+        f"{output_dir}/paths_s{source_id}_" f"t{target_id}_m{metapath_id}.parquet"
+    )
+    conn.execute(
+        f"""
+        COPY (
+          WITH paths_json AS (
+            SELECT
+              {source_id} AS source_id, 
+              {target_id} AS target_id,
+              '{metapath_id}' AS metapath_id,
+              CAST(get_paths_json({source_id}, {target_id}, '{metapath_id}')
+                   AS JSON) AS paths
+          )
+          SELECT
+            source_id, target_id, metapath_id,
+            unnest(json_extract(paths,'$[*].node_ids'))      AS node_ids,
+            unnest(json_extract(paths,'$[*].rel_ids'))       AS rel_ids,
+            unnest(json_extract(paths,'$[*].PDP'))           AS PDP,
+            unnest(json_extract(paths,'$[*].PC'))            AS PC,
+            unnest(json_extract(paths,'$[*].DWPC'))          AS DWPC,
+            unnest(json_extract(paths,
+                  '$[*].percent_of_DWPC'))                AS percent_of_DWPC,
+            unnest(json_extract(paths,'$[*].score'))         AS score
+          FROM paths_json
+        )
+        TO '{out_file}'
+        (FORMAT parquet, COMPRESSION zstd)
+        """
+    )
+    conn.close()
+
+
+def parallel_export_threads_streaming(
+    metapath_file: str,
+    output_dir: str,
+    get_paths_json: Callable[[int, int, str], Any],
+    max_workers: int = 8,
+) -> None:
+    """
+    Stream and thread-parallelize one‐file‐per‐triplet exports
+    without ever building a huge in-memory list.
+    """
+    pathlib.Path(output_dir).mkdir(exist_ok=True, parents=True)
+    gen = metapath_generator(metapath_file)
+
+    pending = set()
+    with ThreadPoolExecutor(max_workers=max_workers) as exe:
+        for source_id, target_id, metapath_id in gen:
+            # submit one more job
+            fut = exe.submit(
+                _export_one,
+                source_id,
+                target_id,
+                metapath_id,
+                output_dir,
+                get_paths_json,
+            )
+            pending.add(fut)
+
+            # if we have too many in flight, wait for some to finish
+            if len(pending) >= max_workers * 2:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                # re-raise any errors
+                for d in done:
+                    d.result()
+
+        # finally, wait for all remaining to finish
+        for d in pending:
+            d.result()
+
+
+# -
+
+
+parallel_export_threads_streaming(
+    metapath_file=metapath_file,
+    output_dir="./data/connectivity-search-precalculated-path-data",
+    get_paths_json=get_paths_json,
+    max_workers=DEFAULT_THREADS,
+)
 
 
