@@ -13,6 +13,8 @@
 # ---
 
 # +
+# %%time
+
 import builtins
 import json
 import pathlib
@@ -25,6 +27,8 @@ from py2neo import Graph as Neo4jGraph
 
 Triplet = Tuple[int, int, str]
 
+TABLE_NAME = "paths"
+DUCKDB_PATH = "./data/connectivity-path-data.duckdb"
 
 def convert(type_id, value):
     """
@@ -55,7 +59,7 @@ def metapath_generator(parquet: str) -> Iterator[Triplet]:
     conn = duckdb.connect()
     cur = conn.cursor()
     cur.execute(
-        f"SELECT source_identifier, target_identifier, metapath_id FROM read_parquet('{parquet}') LIMIT 1"
+        f"SELECT source_identifier, target_identifier, metapath_id FROM read_parquet('{parquet}') LIMIT 1000"
     )
     while True:
         row = cur.fetchone()
@@ -96,61 +100,289 @@ def load_metagraph(schema_json: str) -> MetaGraph:
     return mg
 
 
-def run_all_pdp(neo4j_uri: str, schema_json: str, metapath_file: str, output_dir: str):
+def run_all_pdp_to_duckdb(
+    neo4j_uri: str,
+    schema_json: str,
+    metapath_file: str,
+    w: float = 0.5
+) -> None:
     """
     For each (src, tgt, mp_id) in metapath_file:
-      - look up the MetaPath from the MetaGraph
+      - look up the MetaPath
       - build the Cypher via construct_pdp_query
       - execute it in Neo4j
-      - dump to Parquet
+      - append the result rows into a DuckDB table
     """
-    pathlib.Path(output_dir).mkdir(exist_ok=True, parents=True)
+    # 1) ensure our DuckDB file & table exist
+    pathlib.Path(DUCKDB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    conn = duckdb.connect(DUCKDB_PATH)
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+            source_identifier VARCHAR,
+            target_identifier VARCHAR,
+            metapath_id VARCHAR,
+            path VARCHAR,
+            PDP DOUBLE,
+            percent_of_DWPC DOUBLE
+        )
+    """)
+    conn.close()
 
-    # 1) load the schema into a MetaGraph
-    mg = load_metagraph(schema_json)
-
-    # 2) open a single Neo4j connection
+    # 2) load schema and Neo4j client
+    mg    = load_metagraph(schema_json)
     neo4j = Neo4jGraph(neo4j_uri)
 
+    # 3) stream triples and append each batch
     for src, tgt, mp_abbrev in metapath_generator(metapath_file):
+        # build and run the PDP query
+        mp     = mg.metapath_from_abbrev(mp_abbrev)
         # follow structure from:
         # https://github.com/greenelab/connectivity-search-backend/blob/0a9a5a694c1df6a3a62d75d8b1122218f8bfb60f/dj_hetmech_app/serializers.py#L109
-        mp = mg.metapath_from_abbrev(mp_abbrev)
-        cypher = construct_pdp_query(
-            mp, property="identifier", path_style="string"
-        ) + '\nLIMIT 10'
-
+        cypher = construct_pdp_query(mp, property="identifier", path_style="string") + '\nLIMIT 10'
+        
         # convert our types for use within neo4j context
         src = type_lookup_and_convert(identifier=src)
         tgt = type_lookup_and_convert(identifier=tgt)
         
-        # supply w (and any other parameters you see in the printed Cypher)
-        df = neo4j.run(
-            cypher, source=src, target=tgt, w=0.5  # ← adjust this window size as needed
-        ).to_data_frame()
+        df     = neo4j.run(cypher, source=src, target=tgt, w=w).to_data_frame()
 
+        # annotate with your identifiers
         df["source_identifier"] = str(src)
         df["target_identifier"] = str(tgt)
-        df["metapath_id"] = str(mp_abbrev)
+        df["metapath_id"]       = mp_abbrev
+        df = df[["source_identifier","target_identifier", "metapath_id", "path", "PDP", "percent_of_DWPC"]]
+
+        # 4) append into DuckDB
+        conn = duckdb.connect(DUCKDB_PATH)
         
-        print(src)
-        print(tgt)
-        print(cypher)
-        print(df)
+        # insert into persistent table
+        conn.execute(f"""
+            INSERT INTO {TABLE_NAME}
+            SELECT
+              source_identifier,
+              target_identifier,
+              metapath_id,
+              path,
+              PDP,
+              percent_of_DWPC
+            FROM df
+        """)
+        conn.close()
 
-        out_path = f"{output_dir}/pdp_s{src}_t{tgt}_{mp_abbrev}.parquet"
-        #df.to_parquet(out_path, compression="zstd")
+import pathlib
+from typing import Tuple, Any
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+
+import duckdb
+from py2neo import Graph as Neo4jGraph
+
+Triplet = Tuple[int, int, str]
+
+def _pdp_worker(
+    task: Triplet,
+    neo4j: Neo4jGraph,
+    mg: Any,
+    w: float,
+    master_con: duckdb.DuckDBPyConnection
+) -> None:
+    """Fetch one PDP result and INSERT it into DuckDB via a thread-local cursor."""
+    src, tgt, mp_abbrev = task
+
+    # 1) build & run Cypher
+    mp     = mg.metapath_from_abbrev(mp_abbrev)
+    cypher = construct_pdp_query(
+        mp, property="identifier", path_style="string"
+    ) + "\nLIMIT 10"
+    src2 = type_lookup_and_convert(src)
+    tgt2 = type_lookup_and_convert(tgt)
+
+    df = neo4j.run(cypher, source=src2, target=tgt2, w=w).to_data_frame()
+    if df.empty:
+        return
+
+    # 2) annotate & select columns
+    df["source_identifier"] = str(src2)
+    df["target_identifier"] = str(tgt2)
+    df["metapath_id"]       = mp_abbrev
+    df = df[
+        ["source_identifier","target_identifier",
+         "metapath_id","path","PDP","percent_of_DWPC"]
+    ]
+
+    # 3) insert via a thread-local cursor
+    cur = master_con.cursor()
+    cur.register("tmp_df", df)
+    cur.execute(f"""
+        INSERT INTO {TABLE_NAME}
+        SELECT * FROM tmp_df
+    """)
+    cur.unregister("tmp_df")
+    cur.close()
 
 
-run_all_pdp(
+def run_all_pdp_to_duckdb_parallel(
+    neo4j_uri: str,
+    schema_json: str,
+    metapath_file: str,
+    w: float = 0.5,
+    max_workers: int = 12
+) -> None:
+    """Parallelized PDP → DuckDB using one master connection + cursors."""
+    # 0) ensure DB & table exist
+    pathlib.Path(DUCKDB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    master_con = duckdb.connect(DUCKDB_PATH)
+    master_con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+            source_identifier  VARCHAR,
+            target_identifier  VARCHAR,
+            metapath_id        VARCHAR,
+            path               VARCHAR,
+            PDP                DOUBLE,
+            percent_of_DWPC    DOUBLE
+        )
+    """)
+
+    # 1) load schema & Neo4j client
+    mg    = load_metagraph(schema_json)
+    neo4j = Neo4jGraph(neo4j_uri)
+
+    # 2) dispatch threaded work
+    pending = set()
+    with ThreadPoolExecutor(max_workers=max_workers) as exe:
+        for triplet in metapath_generator(metapath_file):
+            fut = exe.submit(
+                _pdp_worker,
+                triplet, neo4j, mg, w, master_con
+            )
+            pending.add(fut)
+
+            if len(pending) >= max_workers * 2:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for d in done:
+                    d.result()
+
+        # drain remaining
+        for d in pending:
+            d.result()
+
+    # 3) close master connection (this also checkpoints)
+    master_con.close()
+
+def _pdp_parquet_worker(
+    task: Triplet,
+    neo4j: Neo4jGraph,
+    mg: Any,
+    w: float,
+    output_dir: str
+) -> None:
+    """Fetch one PDP result from Neo4j and write it to a Parquet file."""
+    src, tgt, mp_abbrev = task
+
+    # 1) build & run the Cypher
+    mp     = mg.metapath_from_abbrev(mp_abbrev)
+    cypher = (
+        construct_pdp_query(mp, property="identifier", path_style="string")
+        + "\nLIMIT 10"
+    )
+    src2 = type_lookup_and_convert(src)
+    tgt2 = type_lookup_and_convert(tgt)
+
+    df = neo4j.run(cypher, source=src2, target=tgt2, w=w).to_data_frame()
+    if df.empty:
+        return
+
+    # 2) annotate & keep only the wanted columns
+    df["source_identifier"] = str(src2)
+    df["target_identifier"] = str(tgt2)
+    df["metapath_id"]       = mp_abbrev
+    df = df[
+        ["source_identifier",
+         "target_identifier",
+         "metapath_id",
+         "path",
+         "PDP",
+         "percent_of_DWPC"]
+    ]
+
+    # 3) write to Parquet
+    out_file = (
+        f"{output_dir}/pdp_s{src2}_t{tgt2}_{mp_abbrev}.parquet"
+    )
+    df.to_parquet(out_file, compression="zstd")
+
+
+def run_all_pdp_to_parquet_parallel(
+    neo4j_uri: str,
+    schema_json: str,
+    metapath_file: str,
+    output_dir: str,
+    w: float = 0.5,
+    max_workers: int = 12
+) -> None:
+    """
+    Parallelize PDP queries over (src, tgt, mp) triples and write each
+    result to its own Parquet file.
+
+    Args:
+        neo4j_uri:     Bolt URI for your Neo4j instance.
+        schema_json:   Path to the hetnet metagraph JSON.
+        metapath_file: Parquet of (source_id, target_id, metapath_id).
+        output_dir:    Directory to emit per-triplet Parquet files.
+        w:             Window size parameter for PDP queries.
+        max_workers:   Number of concurrent threads.
+    """
+    # prepare output folder
+    pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
+    print(output_dir)
+
+    # load schema & Neo4j client
+    mg    = load_metagraph(schema_json)
+    neo4j = Neo4jGraph(neo4j_uri)
+
+    # stream and dispatch
+    pending = set()
+    with ThreadPoolExecutor(max_workers=max_workers) as exe:
+        for triplet in metapath_generator(metapath_file):
+            fut = exe.submit(
+                _pdp_parquet_worker,
+                triplet, neo4j, mg, w, output_dir
+            )
+            pending.add(fut)
+
+            # throttle to max_workers*2 in-flight tasks
+            if len(pending) >= max_workers * 2:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for d in done:
+                    d.result()
+
+        # finish any remaining
+        for d in pending:
+            d.result()
+
+run_all_pdp_to_parquet_parallel(
     neo4j_uri="bolt://neo4j.het.io:7687",
     schema_json="./data/hetionet-v1.0-metagraph.json",
     metapath_file="./data/connectivity-search-precalculated-metapath-data.parquet",
-    output_dir="./data/example-path-data",
+    output_dir="./example_parquet_paths_output"
 )
-# -
 
-type_lookup_and_convert("80761")
+# +
+"""
+duckdb:
+20 workers and 12 workers
+CPU times: user 18 s, sys: 3.7 s, total: 21.7 s
+Wall time: 2min 42s
+"""
+import duckdb
+
+with duckdb.connect("./data/connectivity-path-data.duckdb") as ddb:
+    result = ddb.execute("""
+    SELECT *
+    FROM paths
+    """).arrow()
+
+result
+# -
 
 getattr(builtins, "int")
 
