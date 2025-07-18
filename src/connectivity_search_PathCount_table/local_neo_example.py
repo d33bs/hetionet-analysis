@@ -19,10 +19,12 @@ import builtins
 import json
 import pathlib
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from pathlib import Path
 from typing import Any, Iterator, Tuple
 
 import duckdb
 import pandas as pd
+import pyarrow.parquet as pq
 from hetnetpy.hetnet import MetaGraph
 from hetnetpy.neo4j import construct_pdp_query
 from neo4j import GraphDatabase
@@ -110,8 +112,12 @@ def _pdp_parquet_worker(
     w: float,
     output_dir: str,
 ) -> None:
-    """Fetch one PDP result from Neo4j and write it to a Parquet file."""
     src, tgt, mp_abbrev = task
+
+    # 0) if we've already done this, skip it
+    out_file = Path(output_dir) / f"pdp_s{src}_t{tgt}_{mp_abbrev}.parquet"
+    if out_file.exists():
+        return
 
     # 1) build & run the Cypher
     mp = mg.metapath_from_abbrev(mp_abbrev)
@@ -129,10 +135,8 @@ def _pdp_parquet_worker(
     if not records:
         return
 
-    # convert to DataFrame
-    df = pd.DataFrame([record.data() for record in records])
-
-    # 2) annotate & keep only the wanted columns
+    # 2) convert to DataFrame and annotate
+    df = pd.DataFrame([r.data() for r in records])
     df["source_identifier"] = str(src2)
     df["target_identifier"] = str(tgt2)
     df["metapath_id"] = mp_abbrev
@@ -148,8 +152,7 @@ def _pdp_parquet_worker(
     ]
 
     # 3) write to Parquet
-    out_file = f"{output_dir}/pdp_s{src2}_t{tgt2}_{mp_abbrev}.parquet"
-    df.to_parquet(out_file, compression="zstd")
+    df.to_parquet(str(out_file), compression="zstd")
 
 
 def run_all_pdp_to_parquet_parallel(
@@ -198,107 +201,18 @@ run_all_pdp_to_parquet_parallel(
 )
 
 # +
-"""
-remote connection to het.io
-duckdb:
-20 workers and 12 workers
-CPU times: user 18 s, sys: 3.7 s, total: 21.7 s
-Wall time: 2min 42s
+input_dir = Path("./example_parquet_paths_output")
+output_pq = Path("./combined_paths.parquet")
 
-parquet:
-about the same
+# grab a ParquetFile and pull out its Arrow schema
+first_file = next(input_dir.glob("*.parquet"))
+pf = pq.ParquetFile(first_file)
+arrow_schema = pf.schema_arrow
 
-locally hosted neo4j 3.0:
-Parquet: 
-3min 51s for 1000 triplets
-"""
+writer = pq.ParquetWriter(output_pq, arrow_schema)
 
-import duckdb
+for path in input_dir.glob("*.parquet"):
+    tbl = pq.read_table(path)
+    writer.write_table(tbl)
 
-with duckdb.connect("./data/connectivity-path-data.duckdb") as ddb:
-    result = ddb.execute(
-        """
-    SELECT *
-    FROM paths
-    """
-    ).arrow()
-
-result
-# -
-
-getattr(builtins, "int")
-
-# +
-import json
-from pprint import pprint
-
-schema_path = "./data/hetionet-v1.0-metagraph.json"  # adjust as needed
-with open(schema_path) as f:
-    jd = json.load(f)
-
-print("Top-level keys:", list(jd.keys()))
-
-# +
-import pandas as pd
-from py2neo import Graph
-
-# 1) Create the client (adjust URI/auth as needed)
-neo4j = Graph("bolt://neo4j.het.io:7687", auth=None)
-
-# 2) Simple “ping” query
-try:
-    df = neo4j.run("RETURN 1 AS test").to_data_frame()
-    print("Connectivity test passed:", df)
-except Exception as e:
-    print("Connectivity test failed:", e)
-
-# 3) (Optional) More realistic smoke test: count of all nodes
-try:
-    df2 = neo4j.run(
-        """
-MATCH path = (n0:CellularComponent)-[:PARTICIPATES_GpCC]-(n1)-[:EXPRESSES_AeG]-(n2)-[:DOWNREGULATES_AdG]-(n3:Gene)
-USING JOIN ON n1
-WHERE n0.identifier = 'GO:0015030'
-AND n3.identifier = 80761
-AND n1 <> n3
-WITH
-[
-size((n0)-[:PARTICIPATES_GpCC]-()),
-size(()-[:PARTICIPATES_GpCC]-(n1)),
-size((n1)-[:EXPRESSES_AeG]-()),
-size(()-[:EXPRESSES_AeG]-(n2)),
-size((n2)-[:DOWNREGULATES_AdG]-()),
-size(()-[:DOWNREGULATES_AdG]-(n3))
-] AS degrees, path
-WITH path, reduce(pdp = 1.0, d in degrees| pdp * d ^ -0.5) AS PDP
-WITH collect({paths: path, PDPs: PDP}) AS data_maps, count(path) AS PC, sum(PDP) AS DWPC
-UNWIND data_maps AS data_map
-WITH data_map.paths AS path, data_map.PDPs AS PDP, PC, DWPC
-RETURN
-  path AS neo4j_path,
-  substring(reduce(s = '', node IN nodes(path)| s + '–' + node.name), 1) AS path,
-  PDP,
-  100 * (PDP / DWPC) AS percent_of_DWPC
-ORDER BY percent_of_DWPC DESC
-LIMIT 10
-    """,
-    ).to_data_frame()
-    print(df2)
-except Exception as e:
-    print("Count query failed:", e)
-
-df2["neo4j_path"].iloc[0]
-
-# +
-import pandas as pd
-
-pd.read_parquet("./data/example-path-data/pdp_s38441_t20413_CCpGeAdG.parquet")
-# -
-
-print(
-    "MATCH path = (n0:CellularComponent)-[:PARTICIPATES_GpCC]-(n1)-[:EXPRESSES_AeG]-(n2)-[:DOWNREGULATES_AdG]-(n3:Gene)\nUSING JOIN ON n1\nWHERE n0.identifier = 'GO:0015030' // Cajal body\nAND n3.identifier = 80761 // UPK3B\nAND n1 \u003C\u003E n3\nWITH\n[\nsize((n0)-[:PARTICIPATES_GpCC]-()),\nsize(()-[:PARTICIPATES_GpCC]-(n1)),\nsize((n1)-[:EXPRESSES_AeG]-()),\nsize(()-[:EXPRESSES_AeG]-(n2)),\nsize((n2)-[:DOWNREGULATES_AdG]-()),\nsize(()-[:DOWNREGULATES_AdG]-(n3))\n] AS degrees, path\nWITH path, reduce(pdp = 1.0, d in degrees| pdp * d ^ -0.5) AS PDP\nWITH collect({paths: path, PDPs: PDP}) AS data_maps, count(path) AS PC, sum(PDP) AS DWPC\nUNWIND data_maps AS data_map\nWITH data_map.paths AS path, data_map.PDPs AS PDP, PC, DWPC\nRETURN\n  path AS neo4j_path,\n  substring(reduce(s = '', node IN nodes(path)| s + '–' + node.name), 1) AS path,\n  PDP,\n  100 * (PDP / DWPC) AS percent_of_DWPC\nORDER BY percent_of_DWPC DESC\nLIMIT 10"
-)
-
-int("GO:0015030")
-
-
+writer.close()
