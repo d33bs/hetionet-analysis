@@ -163,6 +163,10 @@ cython_debug/
 
 # data ignores
 src/bioprocess_metapath_to_gene_pval_and_dwpc/data/results
+src/connectivity_search_PathCount_table/data
+src/connectivity_search_PathCount_table/hetionet-docker
+src/connectivity_search_PathCount_table/hetionet-upgrade
+src/connectivity_search_PathCount_table/hetionet5
 *.sql.gz
 *.parquet
 *.duckdb
