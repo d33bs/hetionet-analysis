@@ -64,7 +64,7 @@ def metapath_generator(parquet: str) -> Iterator[Triplet]:
     conn = duckdb.connect()
     cur = conn.cursor()
     cur.execute(
-        f"SELECT source_identifier, target_identifier, metapath_id FROM read_parquet('{parquet}') LIMIT 1000"
+        f"SELECT source_identifier, target_identifier, metapath_id FROM read_parquet('{parquet}')"
     )
     while True:
         row = cur.fetchone()
@@ -153,7 +153,12 @@ def _pdp_parquet_worker(
 
     # 3) write to Parquet
     df.to_parquet(str(out_file), compression="zstd")
+    return str(out_file)
 
+
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from neo4j import GraphDatabase
+import pathlib
 
 def run_all_pdp_to_parquet_parallel(
     neo4j_uri: str,
@@ -161,11 +166,11 @@ def run_all_pdp_to_parquet_parallel(
     metapath_file: str,
     output_dir: str,
     w: float = 0.5,
-    max_workers: int = 12,
+    max_workers: int = 20,
 ) -> None:
     """
     Parallelize PDP queries over (src, tgt, mp) triples and write each
-    result to its own Parquet file.
+    result to its own Parquet file, printing progress as each file is done.
     """
     # prepare output folder
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -175,22 +180,38 @@ def run_all_pdp_to_parquet_parallel(
     driver = GraphDatabase.driver(neo4j_uri, auth=None)
 
     pending = set()
+    processed = 0
+
     with ThreadPoolExecutor(max_workers=max_workers) as exe:
         for triplet in metapath_generator(metapath_file):
+            # submit the worker
             fut = exe.submit(_pdp_parquet_worker, triplet, driver, mg, w, output_dir)
-            pending.add(fut)
+            pending.add((fut, triplet))
 
-            # throttle to max_workers*2 in-flight tasks
+            # whenever we have too many in flight, wait for at least one to finish
             if len(pending) >= max_workers * 2:
-                done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                for d in done:
-                    d.result()
+                done_futs, _ = wait(
+                    {f for f, _ in pending},
+                    return_when=FIRST_COMPLETED
+                )
+                # handle each completed future
+                for f in done_futs:
+                    # find its triplet
+                    trip = next(tr for (fut_obj, tr) in pending if fut_obj is f)
+                    output_path = f.result()   # will re‑raise if worker errored
+                    processed += 1
+                    print(f"[{processed}] ✓ Wrote {output_path} for {trip}")
+                    # remove it from pending
+                    pending = {(fut_obj, tr) for (fut_obj, tr) in pending if fut_obj is not f}
 
-        # finish any remaining
-        for d in pending:
-            d.result()
+        # finish any left in pending
+        for fut_obj, trip in pending:
+            output_path = fut_obj.result()
+            processed += 1
+            print(f"[{processed}] ✓ Wrote {output_path} for {trip}")
 
     driver.close()
+
 
 
 run_all_pdp_to_parquet_parallel(
