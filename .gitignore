@@ -167,6 +167,7 @@ src/connectivity_search_PathCount_table/data
 src/connectivity_search_PathCount_table/hetionet-docker
 src/connectivity_search_PathCount_table/hetionet-upgrade
 src/connectivity_search_PathCount_table/hetionet5
+src/connectivity_search_PathCount_table/hetionet_kuzu
 *.sql.gz
 *.parquet
 *.duckdb
