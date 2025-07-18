@@ -6,7 +6,7 @@ set -euo pipefail
 TARBALL_URL="https://github.com/hetio/hetionet/raw/v1.0.0/hetnet/neo4j/hetionet-v1.0.db.tar.bz2"
 
 # Use the matching Neo4j version
-NEO4J_IMAGE="neo4j:3.0.1"
+NEO4J_IMAGE="neo4j:3.5.12"
 
 # Where to store data & logs locally
 WORKDIR="${PWD}/hetionet-docker"
@@ -36,7 +36,7 @@ if docker ps -a --format '{{.Names}}' | grep -qx hetionet; then
   docker rm -f hetionet
 fi
 
-echo "🚀 Starting Neo4j 3.0.1 container…"
+echo "🚀 Starting Neo4j 3.5.12 container…"
 docker run -d \
   --platform="$PLATFORM" \
   --name hetionet \
@@ -48,6 +48,7 @@ docker run -d \
   -e NEO4J_dbms_memory_heap_initial__size=1G \
   -e NEO4J_dbms_memory_heap_max__size=6G \
   -e NEO4J_dbms_memory_pagecache_size=4G \
+  -e NEO4J_dbms_allow__upgrade="true" \
   "${NEO4J_IMAGE}"
 
 echo
