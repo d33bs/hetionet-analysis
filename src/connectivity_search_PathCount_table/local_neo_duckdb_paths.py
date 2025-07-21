@@ -247,7 +247,7 @@ def run_all_pdp_to_duckdb_parallel(
 
 # example invocation
 run_all_pdp_to_duckdb_parallel(
-    neo4j_uri="bolt://neo4j.het.io:7687",
+    neo4j_uri="bolt://localhost:7687",
     schema_json="./data/hetionet-v1.0-metagraph.json",
     metapath_file="./data/connectivity-search-precalculated-metapath-data.parquet",
     w=0.5,
