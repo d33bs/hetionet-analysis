@@ -808,6 +808,7 @@ with duckdb.connect() as ddb:
         f"""
         SELECT *
         FROM read_parquet('{"./data/connectivity-search-precalculated-metapath-data.parquet"}')
+        WHERE metapath_id=''
         LIMIT 5;
         """
     ).df()
